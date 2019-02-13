@@ -129,6 +129,7 @@ BEGIN_MESSAGE_MAP(COpenCVDlg, CDialogEx)
 	ON_BN_CLICKED(IDC_BUTTON61, &COpenCVDlg::OnBnClickedButton61)
 	ON_BN_CLICKED(IDC_BUTTON62, &COpenCVDlg::OnBnClickedButton62)
 	ON_BN_CLICKED(IDC_BUTTON63, &COpenCVDlg::OnBnClickedButton63)
+	ON_BN_CLICKED(IDC_BUTTON64, &COpenCVDlg::OnBnClickedButton64)
 END_MESSAGE_MAP()
 
 
@@ -3288,4 +3289,51 @@ void COpenCVDlg::OnBnClickedButton63()
 
 	m_idct.convertTo(m_idct, CV_8U);
 	imshow("m_idct2", m_idct);
+}
+
+
+void draw_houghLines(Mat src, Mat& dst, vector<Vec2f> lines, int nline)
+{
+	cvtColor(src, dst, CV_GRAY2BGR);
+	for (size_t i = 0; i < min((int)lines.size(), nline); i++)
+	{
+		float rho = lines[i][0], theta = lines[i][1];
+		double a = cos(theta), b = sin(theta);
+		Point2d pt(a*rho, b*rho);
+		Point2d delta(1000 * -b, 1000 * a);
+		line(dst, pt + delta, pt - delta, Scalar(0, 255, 0), 1, LINE_AA);
+	}
+}
+
+void COpenCVDlg::OnBnClickedButton64()
+{
+	// TODO: 여기에 컨트롤 알림 처리기 코드를 추가합니다.
+	// 직선 검출 방법 중 가장 널리 사용, 영상 내의 선, 원뿐만 아니라
+	// 임의의  형태를 지닌 물체를 감지해 내는 대표적인 기술
+	// 데이터 손실 및 왜곡이포함된 영상에서도 직선을 잘 추출
+
+	// 영상의 에지 점들을 극 좌표계로 옮겨 물체의 파라미터를 추출하는 방법
+	// 직교 좌표계의 경우 기울기가 무한대, 직선 간격이 동일하지 않을 때
+	// 정밀도와 속도에서 문제가 생기는 반면, 극 좌표계로 옮기면 직선 표현 가능 뿐만 아니라
+	// 수직거리와 각도를 일정한 간격으로 검출함으로서 정밀한 직선 검출 가능
+
+	// 간단히 말해, 
+	// 이진 영상에서 나온 점들을 허프 스페이스로 변환, 각 점들이 허프 스페이스에서는
+	// 곡선으로 이뤄져 있는데 이 곡선들의 교차점이 직선이 되는것
+	// 이 교차점들 중 가장 많이 교차되는 지점이 가장 직선에 근사한 값들이 되는 것
+
+	Mat img = imread("Test.jpg", 0);
+	Mat dst;
+	GaussianBlur(img, img, Size(5, 5), 2, 2);
+	Canny(img, img, 100, 150, 3);
+
+	double rho = 1, theta = CV_PI / 180;
+	vector<Vec2f> line;
+	HoughLines(img, line, rho, theta, 50);
+	draw_houghLines(img, dst, line, 1);
+
+	namedWindow("img", WINDOW_AUTOSIZE);
+	namedWindow("dst", WINDOW_AUTOSIZE);
+	imshow("img", img);
+	imshow("dst", dst);
 }
