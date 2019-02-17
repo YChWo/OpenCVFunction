@@ -130,6 +130,7 @@ BEGIN_MESSAGE_MAP(COpenCVDlg, CDialogEx)
 	ON_BN_CLICKED(IDC_BUTTON62, &COpenCVDlg::OnBnClickedButton62)
 	ON_BN_CLICKED(IDC_BUTTON63, &COpenCVDlg::OnBnClickedButton63)
 	ON_BN_CLICKED(IDC_BUTTON64, &COpenCVDlg::OnBnClickedButton64)
+	ON_BN_CLICKED(IDC_BUTTON65, &COpenCVDlg::OnBnClickedButton65)
 END_MESSAGE_MAP()
 
 
@@ -3336,4 +3337,66 @@ void COpenCVDlg::OnBnClickedButton64()
 	namedWindow("dst", WINDOW_AUTOSIZE);
 	imshow("img", img);
 	imshow("dst", dst);
+}
+
+Mat draw_coner(Mat corner, Mat image, int thresh)
+{
+	int cnt = 0;
+	normalize(corner, corner, 0, 100, NORM_MINMAX, CV_32FC1, Mat());
+	for (int i = 1; i < corner.rows-1; i++)
+	{
+		for (int j = 1; j < corner.cols-1; j++)
+		{
+			float cur = (int)corner.at<float>(i, j);
+			if (cur > thresh)
+			{
+				if (cur > corner.at<float>(i - 1, j) &&
+					cur > corner.at<float>(i + 1, j) &&
+					cur > corner.at<float>(i, j - 1) &&
+					cur > corner.at<float>(i, j + 1))
+				{
+					circle(image, Point(j, i), 2, Scalar(255, 0, 0), - 1);
+					cnt++;
+				}
+			}
+		}
+	}
+
+	return image;
+}
+
+Mat imgcorner;
+Mat corner;
+
+void cornerHarris_demo(int thresh, void*)
+{
+	Mat img1 = draw_coner(corner, imgcorner.clone(), thresh);
+	imshow("harris", img1);
+}
+
+void COpenCVDlg::OnBnClickedButton65()
+{
+	// TODO: 여기에 컨트롤 알림 처리기 코드를 추가합니다.
+	// 에지나 직선처럼 영상 처리에서 중요한 특징 정보로 사용되는
+	// 꼭지점 혹은 코너라 부르는 특징점이 있다.
+	
+	// 윈도우를 모든 방향으로 이동시키며 픽셀의 강도 변화를 측정함으로써
+	// 윈도우 내의 특징을 파악하여 코너 검출
+
+	imgcorner = imread("Test.jpg", 1);
+	Mat gray;
+	
+	cvtColor(imgcorner, gray, CV_BGR2GRAY);
+	
+	int blockSize = 4; // 이웃 화소 범위
+	int apertureSize = 3; // 소벨 마스크 크기
+	double k = 0.04;
+	int thresh = 20; // 코너 응답 임계값
+
+	cornerHarris(gray, corner, blockSize, apertureSize, k);
+	cornerHarris_demo(thresh, 0);
+
+//	createTrackbar("Threshold: ", "harris", &thresh, 100, cornerHarris_demo);
+
+	
 }
