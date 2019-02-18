@@ -32,6 +32,8 @@ protected:
 														// 구현입니다.
 protected:
 	DECLARE_MESSAGE_MAP()
+public:
+	afx_msg void OnBnClickedButton66();
 };
 
 CAboutDlg::CAboutDlg() : CDialogEx(IDD_ABOUTBOX)
@@ -44,6 +46,7 @@ void CAboutDlg::DoDataExchange(CDataExchange* pDX)
 }
 
 BEGIN_MESSAGE_MAP(CAboutDlg, CDialogEx)
+	ON_BN_CLICKED(IDC_BUTTON66, &CAboutDlg::OnBnClickedButton66)
 END_MESSAGE_MAP()
 
 
@@ -131,6 +134,8 @@ BEGIN_MESSAGE_MAP(COpenCVDlg, CDialogEx)
 	ON_BN_CLICKED(IDC_BUTTON63, &COpenCVDlg::OnBnClickedButton63)
 	ON_BN_CLICKED(IDC_BUTTON64, &COpenCVDlg::OnBnClickedButton64)
 	ON_BN_CLICKED(IDC_BUTTON65, &COpenCVDlg::OnBnClickedButton65)
+	ON_BN_CLICKED(IDC_BUTTON66, &COpenCVDlg::OnBnClickedButton66)
+	ON_BN_CLICKED(IDC_BUTTON67, &COpenCVDlg::OnBnClickedButton67)
 END_MESSAGE_MAP()
 
 
@@ -3400,3 +3405,189 @@ void COpenCVDlg::OnBnClickedButton65()
 
 	
 }
+
+void make_trainData(Mat trainData, Mat group[2], Mat& classLable)
+{
+	int half = trainData.rows / 2;
+	Range r1(0, half);
+	Range r2(half, trainData.rows);
+	group[0] = trainData.rowRange(r1);
+	group[1] = trainData.rowRange(r2);
+
+	randn(group[0], 150, 50);
+	randn(group[1], 250, 50);
+
+	classLable.rowRange(r1).setTo(0);
+	classLable.rowRange(r2).setTo(1);
+}
+
+void draw_points(Mat& image, Mat group[2])
+{
+	for (int i = 0; i < group[0].rows; i++)
+	{
+		Point2f pt1(group[0].at<float>(i, 0), group[0].at<float>(i, 1));
+		Point2f pt2(group[1].at<float>(i, 0), group[1].at<float>(i, 1));
+
+		circle(image, pt1, 3, Scalar(0, 0, 255), FILLED);
+		circle(image, pt2, 3, Scalar(0, 255, 0), FILLED);
+	}
+}
+
+void CAboutDlg::OnBnClickedButton66()
+{
+	
+}
+
+
+void kNN_test(Ptr<ml::KNearest> knn, int K, Mat& image)
+{
+	for (int y = 0; y < image.rows; y++)
+	{
+		for (int x = 0; x < image.cols; x++)
+		{
+			Matx12f sample((float)x, (float)y);
+			Mat response;
+			knn->findNearest(sample, K, response);
+
+			int resp = (int)response.at<float>(0);
+			if (resp == 1) image.at<Vec3b>(y, x) = Vec3b(0, 180, 0);
+			else image.at<Vec3b>(y, x) = Vec3b(0, 0, 180);
+		}
+	}
+}
+
+void COpenCVDlg::OnBnClickedButton66()
+{
+	// TODO: 여기에 컨트롤 알림 처리기 코드를 추가합니다.
+	// TODO: 여기에 컨트롤 알림 처리기 코드를 추가합니다.
+
+	/*
+	최근접 이웃 알고리즘은 기존에 가지고 있는 데이터들을 일정한 규칙에 의해 분류된
+	상태에서 새로운 입력데이터의 종류를 예측하는 분류 알고리즘
+
+	학습된 클래스들에서 여러 개(k개)의 가까운 이웃을 선출하고 이를 이용하여 미지의
+	샘플들을 분류하는 방법이다.
+	즉, 샘플과 가장 가까운 이웃으로 선출된 여러 개의 클래스 샘플들 중에서
+	가장 많은 수를 가진 클래스로 미지의 샘플을 분류 (KNN)
+
+	간단히 말해 K는 미지의 샘플 기준으로 가장 가까운 K개의 클래스 샘플을 찾아
+	K개중 가장 많은 수를 차지하는 클래스가 곧 미지의 샘플 클래스로 보는 것
+	*/
+
+	// 100개의 좌표를 두 개의 그룹으로 나누어 랜덤하게 생성하는 예제 샘플코드
+
+	int Nsample = 100;
+	Mat trainData(Nsample, 2, CV_32FC1, Scalar(0));
+	Mat classLable(Nsample, 1, CV_32FC1, Scalar(0));
+	Mat image(400, 400, CV_8UC3, Scalar(255, 255, 255));
+	Mat image2(400, 400, CV_8UC3, Scalar(255, 255, 255));
+	Mat image3(400, 400, CV_8UC3, Scalar(255, 255, 255));
+	Mat group[2];
+	make_trainData(trainData, group, classLable);
+
+	int K = 7, K2 = 50, K3 = 20;
+	Ptr<ml::KNearest> knn = ml::KNearest::create();
+	knn->train(trainData, ml::ROW_SAMPLE, classLable);
+	kNN_test(knn, K, image);
+	kNN_test(knn, K2, image2);
+	kNN_test(knn, K3, image3);
+
+	draw_points(image, group);
+	draw_points(image2, group);
+	draw_points(image3, group);
+	imshow("sample K=" + to_string(K), image);
+	imshow("sample K2=" + to_string(K2), image2);
+	imshow("sample K3=" + to_string(K3), image3);
+}
+
+
+void find_histoPos(Mat img, int& start, int& end, int direct)
+{
+	reduce(img, img, direct, REDUCE_AVG);
+	int minFound = 0;
+	for (int i = 0; i < (int)img.total(); i++)
+	{
+		if(img.at<uchar>(i) < 250)
+		{
+			end = i;
+			if (!minFound)
+			{
+				start = i;
+				minFound = 1;
+			}
+		}
+	}
+}
+
+Mat find_number(Mat part)
+{
+	Point start, end;
+	find_histoPos(part, start.x, end.x, 0);
+	find_histoPos(part, start.y, end.y, 1);
+
+	return part(Rect(start, end));
+}
+
+Mat place_middle(Mat number, Size new_size)
+{
+	int big = max(number.cols, number.rows);
+	Mat square(big, big, number.type(), Scalar(255));
+
+	Point start = (square.size() - number.size()) / 2;
+	Rect middle(start, number.size());
+	number.copyTo(square(middle));
+
+	resize(square, square, new_size);
+	square.convertTo(square, CV_32F);
+	return square.reshape(0, 1);
+}
+
+void COpenCVDlg::OnBnClickedButton67()
+{
+	// TODO: 여기에 컨트롤 알림 처리기 코드를 추가합니다.
+
+	Size  size(40, 40);
+	int K = 15;
+	int Nclass = 10;
+	int Nsample = 20;
+	Mat train_image = imread("train_numbers.png", 0);
+
+	threshold(train_image, train_image, 32, 2255, THRESH_BINARY);
+
+	Mat trainData, classLable;
+
+	for (int i = 0, k = 0; i < Nclass; i++)
+	{
+		for (int j = 0; j < Nsample; j++, k++)
+		{
+			Point start(j*size.width, i*size.height);
+			Rect roi(start, size);
+			Mat part = train_image(roi);
+
+			Mat num = find_number(part);
+			Mat data = place_middle(num, size);
+			trainData.push_back(data);
+			classLable.push_back(i);
+		}
+	}
+
+	Ptr<ml::KNearest> knn = ml::KNearest::create();
+	knn->train(trainData, ml::ROW_SAMPLE, classLable);
+
+	int no;
+	cout << "영상번호를 입력하세요: ";
+	cin >> no;
+
+	string demo_file = format("image\\num\\%02d.png", no);
+	Mat test_img = imread(demo_file, 0);
+
+	threshold(test_img, test_img, 128, 255, THRESH_BINARY);
+	Mat num = find_number(test_img);
+	Mat data = place_middle(num, size);
+
+	Mat result;
+	knn->findNearest(data, K, result);
+
+	cout << "분류결과 : " << result.at<float>(0) << endl;
+	imshow("test_img", test_img);
+} 
