@@ -136,6 +136,8 @@ BEGIN_MESSAGE_MAP(COpenCVDlg, CDialogEx)
 	ON_BN_CLICKED(IDC_BUTTON65, &COpenCVDlg::OnBnClickedButton65)
 	ON_BN_CLICKED(IDC_BUTTON66, &COpenCVDlg::OnBnClickedButton66)
 	ON_BN_CLICKED(IDC_BUTTON67, &COpenCVDlg::OnBnClickedButton67)
+	ON_BN_CLICKED(IDC_BUTTON68, &COpenCVDlg::OnBnClickedButton68)
+	ON_BN_CLICKED(IDC_BUTTON69, &COpenCVDlg::OnBnClickedButton69)
 END_MESSAGE_MAP()
 
 
@@ -3503,7 +3505,8 @@ void COpenCVDlg::OnBnClickedButton66()
 
 void find_histoPos(Mat img, int& start, int& end, int direct)
 {
-	reduce(img, img, direct, REDUCE_AVG);
+	// 행렬 원소를 가로방향 혹은 세로 방향을 감축 = 한 방향 기준으로 투영한 것과 같은 의미
+	reduce(img, img, direct, REDUCE_AVG);	
 	int minFound = 0;
 	for (int i = 0; i < (int)img.total(); i++)
 	{
@@ -3528,8 +3531,9 @@ Mat find_number(Mat part)
 	return part(Rect(start, end));
 }
 
-Mat place_middle(Mat number, Size new_size)
+Mat place_middle(Mat number, Size new_size) 
 {
+	// 각셀의 숫자 위치가 동일해야 학습 효과가 올라간다
 	int big = max(number.cols, number.rows);
 	Mat square(big, big, number.type(), Scalar(255));
 
@@ -3591,3 +3595,63 @@ void COpenCVDlg::OnBnClickedButton67()
 	cout << "분류결과 : " << result.at<float>(0) << endl;
 	imshow("test_img", test_img);
 } 
+
+Point2f pt1, pt2;
+Mat morpImg;
+
+void morphing()
+{
+	Mat dst(morpImg.size(), morpImg.type(), Scalar(0));
+	int width = morpImg.cols;
+
+	for (float y = 0; y < morpImg.rows; y++)
+	{
+		for (float x = 0; x < morpImg.cols; x += 0.1f)
+		{
+			float ratio;
+			if (x < pt1.x) ratio = x / pt1.x;
+			else
+			{
+				ratio = (width - x) / (width - pt1.x);
+			}
+
+			float dx = ratio*(pt2.x - pt1.x);
+			dst.at<uchar>(y, x + dx) = morpImg.at<uchar>(y, x);
+		}
+	}
+	dst.copyTo(morpImg);
+	imshow("image", morpImg);
+}
+
+void onMMMouse(int event, int x, int y, int flags, void* param)
+{
+	if (event == EVENT_LBUTTONDOWN)
+	{
+		pt1 = Point2f(x, y);
+	}
+
+	else if (event == EVENT_LBUTTONUP)
+	{
+		pt2 = Point2f(x, y);
+		morphing();
+	}
+}
+
+void COpenCVDlg::OnBnClickedButton68()
+{
+	// TODO: 여기에 컨트롤 알림 처리기 코드를 추가합니다.
+	// 영상을 여러 다른 방향으로 늘이거나 크기를 조절하는 기법으로
+	// 수순한 스케일링과는 달리 크기 변화의 정도가 영상 전체에 대해 균일하지 않음 (비선형적)
+	// 랜즈 왜곡 보정, 스테레오 영상 정합, 파노라마 영상 합성 등에서 사용 가능
+
+	morpImg = imread("Test.jpg", 0);
+
+	imshow("image", morpImg);
+	setMouseCallback("image", onMMMouse);
+}
+
+
+void COpenCVDlg::OnBnClickedButton69()
+{
+	// TODO: 여기에 컨트롤 알림 처리기 코드를 추가합니다.
+}
