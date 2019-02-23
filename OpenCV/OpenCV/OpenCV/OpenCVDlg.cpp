@@ -138,6 +138,7 @@ BEGIN_MESSAGE_MAP(COpenCVDlg, CDialogEx)
 	ON_BN_CLICKED(IDC_BUTTON67, &COpenCVDlg::OnBnClickedButton67)
 	ON_BN_CLICKED(IDC_BUTTON68, &COpenCVDlg::OnBnClickedButton68)
 	ON_BN_CLICKED(IDC_BUTTON69, &COpenCVDlg::OnBnClickedButton69)
+	ON_BN_CLICKED(IDC_BUTTON70, &COpenCVDlg::OnBnClickedButton70)
 END_MESSAGE_MAP()
 
 
@@ -3651,7 +3652,264 @@ void COpenCVDlg::OnBnClickedButton68()
 }
 
 
+vector<Point2f> findImageCorners(Mat image, Size boardSize)
+{
+	static int cnt = 0;
+	vector<Point2f> imgPoints;
+	Mat gray;
+	cvtColor(image, gray, CV_RGB2GRAY);
+	bool found = findChessboardCorners(gray, boardSize, imgPoints);
+
+	if (found) {
+		cornerSubPix(gray, imgPoints, Size(11, 11), Size(-1, -1),			// 찾은 코너점 위치 개선
+			TermCriteria(TermCriteria::MAX_ITER + TermCriteria::EPS, 30, 0.1));
+
+		drawChessboardCorners(image, boardSize, imgPoints, found);
+		imshow("image_" + to_string(cnt), image);
+		waitKey();
+		destroyWindow("image_" + to_string(cnt++));
+	}
+
+	return imgPoints;
+}
+
+vector<Point3f> calcObjectCorners(Size boardSize, float squareSize)
+{
+	vector<Point3f> corners;
+	for (int i = 0; i < boardSize.height; i++)
+		for (int j = 0; j < boardSize.width; j++)
+		{
+			float x = float(j*squareSize);
+			float y = float(i*squareSize);
+			corners.push_back(Point3f(x, y, 0));
+		}
+
+	return corners;
+}
+
 void COpenCVDlg::OnBnClickedButton69()
 {
 	// TODO: 여기에 컨트롤 알림 처리기 코드를 추가합니다.
+	Size boardSize(8, 7), imageSize;
+	float squareSize = 1.f;
+
+	vector<String> filelist;
+	filelist.push_back("image\\chessboard_01.jpg");
+	filelist.push_back("image\\chessboard_02.jpg");
+	filelist.push_back("image\\chessboard_03.jpg");
+
+	vector<vector<Point2f>> imagePoints;
+	vector<vector<Point3f>> objectPoints;
+
+	for (int i = 0; i < filelist.size(); i++)
+	{
+		Mat image = imread(filelist[i], 1);
+		CV_Assert(image.data);
+
+		vector<Point2f> imgPoints = findImageCorners(image, boardSize);
+
+		if (!imgPoints.empty())
+		{
+			vector<Point3f> objPoints = calcObjectCorners(boardSize, squareSize);
+
+			imagePoints.push_back(imgPoints);
+			objectPoints.push_back(objPoints);
+		}
+	}
+
+	vector<Mat> rvecs, tvecs;
+	Mat cameraMatrix, distCoeffs;
+	Mat undistorted;
+
+	Mat image = imread("image\\chessboard_05.jpg", 1);
+	CV_Assert(image.data);
+
+	double rms = calibrateCamera(objectPoints, imagePoints, image.size(),
+		cameraMatrix, distCoeffs, rvecs, tvecs);
+
+	undistort(image, undistorted, cameraMatrix, distCoeffs);
+
+	cout << "cameraMatrix " << endl << cameraMatrix << endl << endl;
+	printf("RMS error reported by calibrateCamera: %g\n", rms);
+
+	imshow("Original", image);
+	imshow("Undistorted", undistorted);
+	waitKey();
+}
+
+void calc_Histo(const Mat& img, Mat& hist, Vec3i bins, Vec3f range, int _dims)
+{
+	// 색상비교를 위해 RGB 컬러인 입력영상을 HSV 컬러로 변환하고, 색상과채도 정보로
+	// 2차원 히스토그램을 계산한다.
+	// 입력 영상의 채널 수와 상관없이 차원 수를 지정해서 히스토그램을 계산하도록 한다
+
+	int dims = (_dims <= 0) ? img.channels() : _dims;	// 히스토그램 차원 수
+	int channels[] = { 0,1,2 };
+	int histSize[] = { bins[0], bins[1], bins[2] };
+
+	float range1[] = { 0, range[0] };
+	float range2[] = { 0, range[1] };
+	float range3[] = { 0, range[2] };
+	const float* ranges[] = { range1, range2, range3 };
+
+	calcHist(&img, 1, channels, Mat(), hist, dims, histSize, ranges);
+	normalize(hist, hist, 0, 1, NORM_MINMAX);	// 영상간의 동등한 비교를 위해 정규화작업
+
+
+}
+
+Mat draw_histo(Mat hist)
+{
+	if (hist.dims != 2)
+	{
+		cout << "히스토그램이 2차원 데이터가 아닙니다." << endl;
+		exit(1);
+	}
+
+	float ratio_value = 512.f;				// 휘도 범위 스케일 비율
+	float ratio_hue = 180.f / hist.rows;	// 색상 범위 스케일
+	float ratio_sat = 256.f / hist.cols;	// 채도 범위 스케일
+
+	Mat graph(hist.size(), CV_32FC3);
+	for (int i = 0; i < hist.rows; i++)
+	{
+		for (int j = 0; j < hist.cols; j++)
+		{
+			float value = hist.at<float>(i, j)* ratio_value;
+			float hue = i*ratio_hue;
+			float sat = j*ratio_sat;
+			graph.at<Vec3f>(i, j) = Vec3f(hue, sat, value);
+		}
+	}
+
+	graph.convertTo(graph, CV_8U);
+	cvtColor(graph, graph, CV_HSV2BGR);
+	resize(graph, graph, Size(0, 0), 10, 10, INTER_NEAREST);
+	// 최근접 이웃 보간을 적용하여 의도적으로 계단 현상이 나타나게함
+	// 각 좌표의 구분을 명확하게 하여 색을 쉽게 확인하기 위함
+
+	return graph;
+}
+
+vector<Mat> load_histo(Vec3i bins, Vec3f ranges, int nImages)
+{
+	vector<Mat> DB_hists;
+	for (int i = 0; i < nImages; i++)
+	{
+		String fname = format("image\\DB\\img_%02d.jpg", i);
+		Mat hsv, hist, img = imread(fname, IMREAD_COLOR);
+		if (img.empty()) continue;
+
+		cvtColor(img, hsv, CV_BGR2HSV);
+		calc_Histo(hsv, hist, bins, ranges, 2);
+		DB_hists.push_back(hist);
+	}
+
+	cout << format("%d 개 파일 로드 및 히스토그램 계산 완료", DB_hists.size());
+	return DB_hists;
+}
+
+Mat query_img()
+{
+	do {
+		int q_no = 74;
+		cout << "질의영상 번호를 입력하세요: ";
+		cin >> q_no;
+
+		String fname = format("image\\DB\\img_%02d.jpg", q_no);
+		Mat query = imread(fname, IMREAD_COLOR);
+
+		if (query.empty()) cout << "질의영상 번호가 잘못되었습니다." << endl;
+		else
+		{
+			return query;
+		}
+	} while (1);
+}
+
+Mat calc_similarity(Mat query_hist, vector<Mat>& DB_hists)
+{
+	Mat DB_similaritys;
+	for (int i = 0; i < (int)DB_hists.size(); i++)
+	{
+		double compare = compareHist(query_hist, DB_hists[i], CV_COMP_CORREL);
+		DB_similaritys.push_back(compare);
+	}
+
+	return DB_similaritys;
+}
+
+Mat make_img(Mat img, Mat hist_img)
+{
+	int w = img.cols + hist_img.cols + 10;
+	int h = max(img.rows, hist_img.rows);
+	Mat tmp(h, w, CV_8UC3, Scalar(255, 255, 255));
+
+	int gap = abs(img.rows - hist_img.rows) / 2;
+
+	Rect r1(Point(0, 0), img.size());
+	Rect r2(Point(img.cols + 5, gap), hist_img.size());
+
+	img.copyTo(tmp(r1));
+	hist_img.copyTo(tmp(r2));
+
+	return tmp;
+}
+
+void select_view(double sinc, Mat DB_similaritys, Vec3i bins, Vec3f ranges)
+{
+	Mat m_idx, sorted_sim;
+	sortIdx(DB_similaritys, m_idx, SORT_EVERY_COLUMN + cv::SORT_DESCENDING);
+	cv::sort(DB_similaritys, sorted_sim, SORT_EVERY_COLUMN + cv::SORT_DESCENDING);
+
+	for (int i = 0; i < (int)sorted_sim.total(); i++)
+	{
+		double  sim = sorted_sim.at<double>(i);
+		if (sim > sinc)
+		{
+			int idx = m_idx.at<int>(i);
+			String  fname = format("image/DB/img_%02d.jpg", idx);
+			Mat img = imread(fname, 1);
+
+			Mat  hsv, hist;
+			cvtColor(img, hsv, CV_BGR2HSV);			// HSV 컬러 변환
+			calc_Histo(hsv, hist, bins, ranges, 2);			// 2차원 히스토그램 계산
+
+			Mat hist_img = draw_histo(hist);
+			Mat tmp = make_img(img, hist_img);
+
+			String  title = format("img_%03d - %5.2f", idx, sim);
+			cout << title << endl;
+			imshow(title, tmp);
+		}
+	}
+}
+
+void COpenCVDlg::OnBnClickedButton70()
+{
+	// TODO: 여기에 컨트롤 알림 처리기 코드를 추가합니다.
+	Vec3i bins(30, 42, 0);
+	Vec3f ranges(180, 256, 0);
+
+	vector<Mat> DB_hists = load_histo(bins, ranges, 100);
+	Mat query = query_img();
+
+	Mat hsv, query_hist;
+	cvtColor(query, hsv, CV_BGR2HSV);					// HSV 컬러 변환
+	calc_Histo(hsv, query_hist, bins, ranges, 2);
+	Mat hist_img = draw_histo(query_hist);
+
+	Mat DB_similaritys = calc_similarity(query_hist, DB_hists);
+
+	double  sinc;
+	cout << "   기준 유사도 입력: ";
+	cin >> sinc;
+	//	select_view(sinc, DB_similaritys);
+	select_view(sinc, DB_similaritys, bins, ranges);
+
+	imshow("image", query);
+	imshow("hist_img", hist_img);
+	waitKey();
+
+	
 }

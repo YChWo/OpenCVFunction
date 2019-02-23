@@ -101,4 +101,5 @@ public:
 	afx_msg void OnBnClickedButton67();
 	afx_msg void OnBnClickedButton68();
 	afx_msg void OnBnClickedButton69();
+	afx_msg void OnBnClickedButton70();
 };
