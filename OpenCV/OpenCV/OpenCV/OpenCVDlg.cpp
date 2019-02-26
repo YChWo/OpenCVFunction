@@ -141,6 +141,7 @@ BEGIN_MESSAGE_MAP(COpenCVDlg, CDialogEx)
 	ON_BN_CLICKED(IDC_BUTTON70, &COpenCVDlg::OnBnClickedButton70)
 	ON_BN_CLICKED(IDC_BUTTON71, &COpenCVDlg::OnBnClickedButton71)
 	ON_BN_CLICKED(IDC_BUTTON72, &COpenCVDlg::OnBnClickedButton72)
+	ON_BN_CLICKED(IDC_BUTTON73, &COpenCVDlg::OnBnClickedButton73)
 END_MESSAGE_MAP()
 
 
@@ -3757,8 +3758,6 @@ void calc_Histo(const Mat& img, Mat& hist, Vec3i bins, Vec3f range, int _dims)
 
 	calcHist(&img, 1, channels, Mat(), hist, dims, histSize, ranges);
 	normalize(hist, hist, 0, 1, NORM_MINMAX);	// 영상간의 동등한 비교를 위해 정규화작업
-
-
 }
 
 
@@ -4197,4 +4196,199 @@ void COpenCVDlg::OnBnClickedButton72()
 				imshow("correct_img", correct_img);
 			}
 		}
+}
+
+
+Mat coinpreprocessing(Mat img)
+{
+	Mat gray, th_img;
+	cvtColor(img, gray, CV_BGR2GRAY);
+	GaussianBlur(gray, gray, Size(7, 7), 2, 2);
+
+	threshold(gray, th_img, 130, 255, THRESH_BINARY | THRESH_OTSU);
+	morphologyEx(th_img, th_img, MORPH_OPEN, Mat(), Point(-1, -1), 1);
+
+	return th_img;
+}
+
+vector<RotatedRect> find_coins(Mat img)
+{
+	vector<vector<Point> > contours;
+	findContours(img.clone(), contours, RETR_EXTERNAL, CHAIN_APPROX_SIMPLE);
+
+	vector<RotatedRect> circles;
+	for (int i = 0; i < (int)contours.size(); i++)
+	{
+		RotatedRect mr = minAreaRect(contours[i]);	// 외곽선의 최소영역 사각형을 구해주는 함수
+		mr.angle = (mr.size.width + mr.size.height) / 4.0f;
+
+		if (mr.angle > 18) circles.push_back(mr);
+	}
+
+	return circles;
+}
+
+vector<Mat> make_coinImg(const Mat src, vector<RotatedRect> circles)
+{
+	vector<Mat> coins;
+	for (int i = 0; i < (int)circles.size(); i++)
+	{
+		int radius = (int)circles[i].angle;
+		Size size = circles[i].size* 1.5f;
+		Point2f center = size / 2;
+
+		Mat coin, mask(size, CV_8UC3, Scalar(0, 0, 0));
+		circle(mask, center, radius, Scalar(255, 255, 255), FILLED);
+
+		getRectSubPix(src, size, circles[i].center, coin);	// 동전영상 가져오기
+		bitwise_and(coin, mask, coin);	// 마스킹처리
+		coins.push_back(coin);
+	}
+
+	return coins;
+}
+
+vector<Mat> calc_coin_histo(vector<Mat> coins, int hue_bin)
+{
+	vector<Mat> histo;
+	for (int i = 0; i < (int)coins.size(); i++)
+	{
+		Mat hsv, hist, hist_img;
+		cvtColor(coins[i], hsv, CV_BGR2HSV);
+		calc_Histo(hsv, hist, Vec3i(hue_bin, 0, 0), Vec3f(180, 0, 0), 1);
+
+		hist.at<float>(0) = 0;
+		hist.at<float>(1) = 0;		// 빨간색 빈도값 제거
+		//normalize(hist, hist, 0, 1, NORM_MINMAX);	// 정규화
+		histo.push_back(hist);
+	}
+	return histo;
+}
+
+// 색상으로 히스토그램 그리기
+void coin_draw_histo_hue(Mat hist, Mat &hist_img, Size size = Size(256, 200))
+{
+	Mat hsv_palatte = make_palatte(hist.rows);
+
+	hist_img = Mat(size, CV_8UC3, Scalar(255, 255, 255));
+	float  bin = (float)hist_img.cols / hist.rows;
+	normalize(hist, hist, 0, hist_img.rows, NORM_MINMAX);
+
+	for (int i = 0; i<hist.rows; i++)
+	{
+		float start_x = (i * bin);
+		float  end_x = (i + 1) * bin;
+		Point2f pt1(start_x, 0);
+		Point2f pt2(end_x, hist.at <float>(i));
+
+		Scalar color = hsv_palatte.at<Vec3b>(i);				// 색상팔레트 색지정
+		if (pt2.y>0) rectangle(hist_img, pt1, pt2, color, -1);	// 팔레트 색 그리기	
+	}
+	flip(hist_img, hist_img, 0);
+}
+
+vector<int> grouping(vector<Mat> hists)
+{
+	// 조명 각도 등의 이유에서 히스토그램이 불분명하게 나온 데이터들에
+	// 가중치를 곱하여 유사도 값을 기준으로 두 그룹으로 나눈다
+
+	Matx<float, 32, 1> w[2], s[2];
+	w[0] << 0, 0, 2, 2, 3, 5, 5, 4, 4, 3, 3, 2, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 2, 2, 2, 3, 3, 2;
+	w[1] << 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 2, 3, 4, 5, 6, 7, 6, 5, 4, 3, 2, 1, 0, 0, 0, 0, 0, 0;
+
+	vector<int> groups;
+	for (int i = 0; i < (int)hists.size(); i++)
+	{
+		multiply(w[0], hists[i], s[0]);				// 히스토그램 유사도
+		multiply(w[1], hists[i], s[1]);
+
+		int group = (sum(s[0])[0] > sum(s[1])[0]) ? 0 : 1;
+		groups.push_back(group);
+	}
+	return groups;
+}
+
+void classify_coins(vector<RotatedRect> circles, vector<int>& groups, int Ncoins[4])
+{
+	// grouping 에서 갈라진 그룹에서 다시 크기를 통해 종류 구분
+	for (int i = 0; i < (int)circles.size(); i++)
+	{
+		int coin = 0;
+		int radius = cvRound(circles[i].angle);
+
+		if (groups[i] == 0) {
+			if (radius > 48)		coin = 3;
+			else if (radius > 46)	coin = 2;
+			else if (radius > 25)	coin = 0;
+		}
+		if (groups[i] == 1) {
+			if (radius > 48)		coin = 3;
+			else if (radius > 43)	coin = 2;
+			else if (radius > 36)	coin = 1;
+		}
+
+		Ncoins[coin]++;
+	}
+}
+
+int calc_coins(int Ncoins[4])
+{
+	int count = 0;
+	int coin_value[] = { 10, 50, 100, 500 };
+
+	for (int i = 0; i< 4; i++) {
+		count += coin_value[i] * Ncoins[i];
+
+		cout << format("%3d원: %3d 개", coin_value[i], Ncoins[i]) << endl;
+	}
+	return count;
+
+}
+
+void  draw_circle(Mat& image, vector<RotatedRect> circles, vector<int> groups)
+{
+	Scalar color[] = {
+		Scalar(0,  0, 255) , Scalar(255, 0 , 0) ,			// 그룹색상 (빨간색, 파란색)
+		Scalar(200, 50, 0) , Scalar(250, 0 ,255)			// 검출순번, 동전반지름 색상
+	};
+
+	for (int i = 0; i < (int)circles.size(); i++)
+	{
+		int  radius = cvRound(circles[i].angle);				// 동전 반지름
+		Point center = (Point)circles[i].center;				// 동전 중심
+		circle(image, center, radius, color[groups[i]], 2);
+
+		putText(image, to_string(i), center + Point(-10, 0), 1, 1, color[2], 2);			// 검출순번
+		putText(image, to_string(radius), center + Point(-10, 20), 1, 1, color[3], 2);// 동전반지름
+	}
+
+}
+void COpenCVDlg::OnBnClickedButton73()
+{
+	// TODO: 여기에 컨트롤 알림 처리기 코드를 추가합니다.
+	int coin_no, hue_bin = 32;
+	cout << "동전 영상번호: ";
+	cin >> coin_no;^
+	String fname = format("image\\coin\\%2d.png", coin_no);
+	Mat image = imread(fname, 1);
+	CV_Assert(image.data);
+
+	Mat th_img = coinpreprocessing(image);
+	vector<RotatedRect> circles = find_coins(th_img);
+
+	vector<Mat> coins_img = make_coinImg(image, circles);
+	vector<Mat> coins_hist = calc_coin_histo(coins_img, hue_bin);
+
+	int Ncoins[4] = { 0, };
+	vector<int> groups = grouping(coins_hist);
+	classify_coins(circles, groups, Ncoins);
+	int coin_count = calc_coins(Ncoins);
+	
+	// 결과 출력
+	String str = format("total coin : %d Won", coin_count);
+	cout << str << endl;
+	putText(image, str, Point(10, 50), 1, 2, Scalar(0, 200, 0), 2);
+	draw_circle(image, circles, groups);
+	imshow("결과 영상", image);
+
 }
