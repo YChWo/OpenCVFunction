@@ -142,6 +142,7 @@ BEGIN_MESSAGE_MAP(COpenCVDlg, CDialogEx)
 	ON_BN_CLICKED(IDC_BUTTON71, &COpenCVDlg::OnBnClickedButton71)
 	ON_BN_CLICKED(IDC_BUTTON72, &COpenCVDlg::OnBnClickedButton72)
 	ON_BN_CLICKED(IDC_BUTTON73, &COpenCVDlg::OnBnClickedButton73)
+	ON_BN_CLICKED(IDC_BUTTON74, &COpenCVDlg::OnBnClickedButton74)
 END_MESSAGE_MAP()
 
 
@@ -4368,7 +4369,7 @@ void COpenCVDlg::OnBnClickedButton73()
 	// TODO: 여기에 컨트롤 알림 처리기 코드를 추가합니다.
 	int coin_no, hue_bin = 32;
 	cout << "동전 영상번호: ";
-	cin >> coin_no;^
+	cin >> coin_no;
 	String fname = format("image\\coin\\%2d.png", coin_no);
 	Mat image = imread(fname, 1);
 	CV_Assert(image.data);
@@ -4391,4 +4392,375 @@ void COpenCVDlg::OnBnClickedButton73()
 	draw_circle(image, circles, groups);
 	imshow("결과 영상", image);
 
+}
+
+// 번호판 영상과 번호판이 아닌 영상으로 두 개의 라벨을 생성하여 XML 파일로 학습 데이터 생성
+void collect_tarinImage(Mat& trainingData, Mat& labels, int Nimages=140)
+{
+	// 번호판 영상 수집
+	for (int i = 0; i < Nimages; i++)
+	{
+		string fname = format("image\\svm\\trainimage\\%03d.png", i);
+		Mat img = imread(fname, 0);
+		CV_Assert(img.data);
+
+		Mat tmp = img.reshape(1, 1);		// 1행 데이터 생성
+		int label = (i < 70) ? 1 : 0;
+		trainingData.push_back(tmp);
+		labels.push_back(label);
+	}
+}
+
+void write_traindata(string fn, Mat trainingData, Mat classes)
+{
+	FileStorage fs(fn, FileStorage::WRITE);
+	fs << "TrainingData" << trainingData;
+	fs << "classes" << classes;
+	fs.release();
+}
+
+
+// 번호판 영상 학습
+void read_trainData(string fn, Mat& trainingData, Mat& lables = Mat())
+{
+	FileStorage fs(fn, FileStorage::READ);
+	CV_Assert(fs.isOpened());
+
+	fs["TrainingData"] >> trainingData;		// 학습데이터 행렬로 읽기
+	fs["classes"] >> lables;				// 레이블값 행렬로 읽기
+	fs.release();
+	trainingData.convertTo(trainingData, CV_32FC1);
+}
+
+Ptr<ml::SVM> SVM_create(int type, int max_iter, double epsilon)
+{
+	Ptr<ml::SVM> svm = ml::SVM::create();		// SVM 객체 선언
+	// SVM 파라미터 지정
+	svm->setType(ml::SVM::C_SVC);	// C-Support Vector Classification
+	svm->setKernel(ml::SVM::LINEAR);	// 선형 SVM
+	svm->setGamma(1);	// 커널함수의 감마값
+	svm->setC(1);	// 최적화를 위한 C파라미터
+	TermCriteria criteria(type, max_iter, epsilon);
+	svm->setTermCriteria(criteria); // 학습 반복조건 지정
+	return svm;
+}
+
+// 번호판 후보 영역 검색
+// 1. 컬러영상 -> 흑백영상
+// 2. 블러링 
+// 3. 수평 소벨마스크(dx) 적용 후 엣지 검출
+// 4. 모폴로지
+
+Mat svmpreprocessing(Mat image)
+{
+	Mat gray, th_img, morph;
+	Mat kernel(5, 15, CV_8UC1, Scalar(1));	// 닫힘연산 마스크 (번호판모양 처럼 가로로 길게)
+	cvtColor(image, gray, CV_BGR2GRAY);
+	blur(gray, gray, Size(5, 5));
+	Sobel(gray, gray, CV_8U, 1, 0, 3);
+
+	threshold(gray, th_img, 120, 255, THRESH_BINARY);
+	morphologyEx(th_img, morph, MORPH_CLOSE, kernel, Point(-1, -1), 2);
+
+	imshow("th_img", th_img), imshow("morph", morph);
+	return morph;
+}
+
+// 번호판 후보 검증
+// 검출 영역 넓이로 후보영역 판단
+bool vertify_plate(RotatedRect mr)	
+{
+	float size = mr.size.area();
+	float aspect = (float)mr.size.height / mr.size.width;
+	if (aspect < 1) aspect = 1 / aspect;		
+
+	bool ch1 = size > 2000 && size < 30000;
+	bool ch2 = aspect > 1.3 && aspect < 6.4;
+
+	return ch1 && ch2;
+}
+
+// 위 전처리 수행영상에서 번호판 후보영역을 검색
+void find_candidates(Mat img, vector<RotatedRect>& candidates)
+{
+	vector<vector<Point>> contours;
+	findContours(img.clone(), contours, RETR_EXTERNAL, CHAIN_APPROX_SIMPLE);
+
+	for (int i = 0; i < (int)contours.size(); i++)	// 검출 외곽선 조회
+	{
+		RotatedRect rot_rect = minAreaRect(contours[i]);	// 외곽선 최소영역 회전사각형 검출
+		if (vertify_plate(rot_rect))
+			candidates.push_back(rot_rect);
+	}
+}
+
+void draw_rotatedRect(Mat& img, RotatedRect mr, Scalar color, int thickness = 2)
+{
+	Point2f pts[4];
+	mr.points(pts);
+	for (int i = 0; i < 4; ++i)
+		line(img, pts[i], pts[(i + 1) % 4], color, thickness);	//4개 좌표 잇기
+}
+
+// 번호판 후보영상 복원
+// ** floodFill (계산 이미지, 내부 채우기 색상, 하한값, 상한값, 연결요소, 연결성
+// 하한값~상한값의 색상까지는 같은색으로 간주하고 채우기 색상으로 모두 채움
+void refine_candidate(Mat image, RotatedRect& candi)
+{
+	Mat fill(image.size() + Size(2, 2), CV_8UC1, Scalar(0)); // 채움 영역
+	Scalar dif1(25, 25, 25), dif2(25, 25, 25);	// 채움 색상 범위
+	int flags = 4 + 0xff00;	// 채움 방향
+	flags += FLOODFILL_FIXED_RANGE + FLOODFILL_MASK_ONLY;
+
+	// 후보영역 유사 컬러 채움
+	vector<Point2f> rand_pt(15);		// 랜덤좌표 15개
+	randn(rand_pt, 0, 7);	//입력영상 범위 사각형
+	Rect img_rect(Point(0, 0), image.size());
+	for (int i = 0; i < rand_pt.size(); i++)
+	{
+		Point2f seed = candi.center + rand_pt[i];
+		if (img_rect.contains(seed))		// 입력영상 범위 사각형
+			floodFill(image, fill, seed, Scalar(), &Rect(), dif1, dif2, flags);
+	}
+
+	// 채움 영역 사각형 계산
+	vector<Point> fill_pts; for (int i = 0; i < fill.rows; i++)
+		for (int j = 0; j < fill.cols; j++)
+			if (fill.at<uchar>(i, j) == 255)
+				fill_pts.push_back(Point(j, i));
+
+	candi = minAreaRect(fill_pts);	// 채움 좌표들로 최소영역 계산
+
+}
+
+void rotate_plate(Mat image, Mat& corp_img, RotatedRect candi)
+{
+	float aspect = (float)candi.size.width / candi.size.height;
+	float angle = candi.angle;
+
+	if (aspect < 1)
+	{
+		swap(candi.size.width, candi.size.height);
+		angle += 90;
+	}
+
+	Mat rotmat = getRotationMatrix2D(candi.center, angle, 1);
+	warpAffine(image, corp_img, rotmat, image.size(), INTER_CUBIC);
+	getRectSubPix(corp_img, candi.size, candi.center, corp_img);
+}
+
+
+vector<Mat> make_candidates(Mat image, vector<RotatedRect>& candidates)
+{
+	vector<Mat> candidates_img;
+	for (int i = 0; i < (int)candidates.size();)
+	{
+		refine_candidate(image, candidates[i]);
+		if (vertify_plate(candidates[i]))
+		{
+			Mat corp_img;
+			rotate_plate(image, corp_img, candidates[i]);	// 회전 및 후보영상 가져오기
+
+			cvtColor(corp_img, corp_img, CV_BGR2GRAY);
+			resize(corp_img, corp_img, Size(144, 28), 0, 0, INTER_CUBIC);	// 크기 정규화
+			candidates_img.push_back(corp_img);	// 보정 영상 저장
+			i++;
+		}
+		else
+			candidates.erase(candidates.begin() + i);	// 벡터 원소에서 제거
+	}
+	return candidates_img;
+}
+
+int classify_plates(Ptr<ml::SVM> svm, vector<Mat> candi_img)
+{
+	for (int i = 0; i < (int)candi_img.size(); i++)
+	{
+		Mat onerow = candi_img[i].reshape(1, 1);
+		onerow.convertTo(onerow, CV_32F);
+
+		Mat results; 
+		svm->predict(onerow, results); // SVM 분류 수행
+		if (results.at<float>(0) == 1)
+			return i;
+	}
+
+	return -1;
+}
+
+// 번호판 차량 번호 인식을 위한 k-NN 방법
+Ptr<ml::KNearest> kNN_train(string train_img, int K, int Nclass, int Nsample)
+{
+	Size size(40, 40);
+	Mat trainData, classLable;
+	Mat train_image = imread(train_img, 0);
+	CV_Assert(train_image.data);
+
+	threshold(train_image, train_image, 32, 255, THRESH_BINARY);
+	for (int i = 0, k = 0; i < Nclass; i++)
+	{
+		for (int j = 0; j < Nsample; j++, k++)
+		{
+			Point pt(j*size.width, i*size.height);	// 각 셀 시작 좌표
+			Rect roi(pt, size);
+			Mat part = train_image(roi);	// 숫자 영상 분리
+
+			Mat num = find_number(part);	// 숫자객체 검출
+			Mat data = place_middle(num, size);	// 셀 중심에 숫자 배치
+			trainData.push_back(data);	// 학습 데이터 수집
+			classLable.push_back(i);	// 레이블링
+		}
+	}
+
+	Ptr<ml::KNearest> knn = ml::KNearest::create();	// k-NN 객체 생성
+	knn->train(trainData, ml::ROW_SAMPLE, classLable);	// k-NN 학습
+	return knn;
+}
+
+// 번호판 영상 전처리 과정, ROI를 좀더 작게 잡아 노이즈 제거
+void preprocessing_plate(Mat plate_img, Mat& ret_img)
+{
+	resize(plate_img, plate_img, Size(180, 35));
+	threshold(plate_img, plate_img, 32, 255, THRESH_BINARY | THRESH_OTSU);
+
+	Point pt1 = Point(6, 3);
+	Point pt2 = plate_img.size() - Size(pt1);
+	ret_img = plate_img(Rect(pt1, pt2)).clone();
+}
+
+// 번호판 내 한글 인식, boundingRect를 통해 번호판 크기를 잡고 특정 위치의 픽셀 범위 내
+// 문자 검출, 한글의 경우 자음 모음 객체를 하나의 객체로 잡음
+void find_objects(Mat sub_mat, vector<Rect>& object_rects)
+{
+	vector<vector<Point>> contours;
+	findContours(sub_mat, contours, RETR_EXTERNAL, CHAIN_APPROX_SIMPLE);
+
+	vector<Rect> text_rects;
+	for (int i = 0; i < (int)contours.size(); i++)
+	{
+		Rect r = boundingRect(contours[i]);	// 검출 객체 사각형
+		if (r.width / (float)r.height > 2.5) continue; // 객체 종횡비
+		
+		if (r.x > 45 && r.x < 80 && r.area() > 60)
+			text_rects.push_back(r);
+		else if (r.area() > 150)
+			object_rects.push_back(r);
+	}
+		if (text_rects.size() > 0)
+		{
+			for (size_t i = 1; i < (int)text_rects.size(); i++)
+			{
+				text_rects[0] |= text_rects[i];
+			}
+			object_rects.push_back(text_rects[0]);
+		}
+	
+}
+
+void sort_rects(vector<Rect> obj_rects, vector<Rect>& sorted_rects)
+{
+	Mat pos_x;
+	for (size_t i = 0; i < obj_rects.size(); i++)
+		pos_x.push_back(obj_rects[i].x);	//x 좌표 저장
+
+	// x좌표 정렬된 원본 인덱스
+	sortIdx(pos_x, pos_x, SORT_EVERY_COLUMN + cv::SORT_ASCENDING);	// cv 정렬 함수
+
+	for (int i = 0; i < pos_x.rows; i++)
+	{
+		int idx = pos_x.at<int>(i, 0);
+		sorted_rects.push_back(obj_rects[idx]);
+	}
+
+}
+
+// 검출 객체 영상의 숫자 및 문자 인식
+void classify_numbers(vector<Mat> numbers, Ptr<ml::KNearest> knn[2], int K1, int K2)
+{
+	string text_value[] = {
+		"가", "나", "다", "라", "마", "거", "너","더","러","머",
+		"고", "노", "도", "로", "모", "구", "누", "두", "루", "무",
+		"바", "사", "아", "자", "하"
+	};
+
+	cout << "분류결과 : ";
+	for (int i = 0; i < (int)numbers.size(); i++)
+	{
+		Mat num = find_number(numbers[i]);
+		Mat data = place_middle(num, Size(40, 40));
+
+		Mat results;
+		if (i == 2) {
+			knn[1]->findNearest(data, K1, results);
+			cout << text_value[(int)results.at<float>(0)];
+		}
+		else {
+			knn[0]->findNearest(data, K2, results);
+			cout << results.at<float>(0) << "";
+		}
+
+	}
+}
+
+void COpenCVDlg::OnBnClickedButton74()
+{
+	// TODO: 여기에 컨트롤 알림 처리기 코드를 추가합니다.
+	// 학습 데이터 그룹 중심점을 이어 경계를 분리하여 Test Data를 판별하는 방법이
+	// 선형 판별법이라 한다면, SVM은 각 분류 데이턷르의 거리가 가장 먼 분리 경계면을 찾아내
+	// 거길 기준으로 분리 경계면을 설정하는 방법, 
+	// 즉 분리 경계와 실제 데이터들 사이의 마진이 가장 크도록 분리 경계를 설정,
+	// 이 여유 공간을 설정함으로써 새로운 데이터에 대한 판별정확도를 높이며 일반화 오류를 줄인다
+	int K1 = 15, K2 = 15;
+	Ptr<ml::KNearest> knn[2];
+	knn[0] = kNN_train("image\\svm\\train_numbers1.png", K1, 10, 20);
+	knn[1] = kNN_train("image\\svm\\train_texts.bmp", K2, 25, 20);
+
+	Mat trainingData, labels;
+	read_trainData("SVMDATA.xml", trainingData, labels);
+	Ptr<ml::SVM> svm = SVM_create(CV_TERMCRIT_ITER, 1000, 0);	//SVM 객체 생성
+	svm->train(trainingData, ml::ROW_SAMPLE, labels);
+
+	int car_no;
+	cout << "차량 영상 번호(0~20) : ";
+	cin >> car_no;
+
+	string fn = format("image\\svm\\test_car\\%02d.jpg", car_no);
+	Mat image = imread(fn, 1);
+	CV_Assert(image.data);
+
+	Mat morph = svmpreprocessing(image);
+	vector<RotatedRect> candidates;
+	find_candidates(morph, candidates);
+	vector<Mat> candidate_img = make_candidates(image, candidates);	// 후보영상생성
+
+
+	int plate_no = classify_plates(svm, candidate_img);	// SVM 분류
+	if (plate_no >= 0)
+	{
+		vector<Rect> object_rects, sorted_rects;
+		vector<Mat> numbers;
+		Mat plate_img, color_plate;
+
+		preprocessing_plate(candidate_img[plate_no], plate_img);
+		cvtColor(plate_img, color_plate, CV_GRAY2BGR);
+
+		find_objects(~plate_img, object_rects);
+		sort_rects(object_rects, sorted_rects);
+
+		for (size_t i = 0; i < sorted_rects.size(); i++)
+		{
+			numbers.push_back(plate_img(sorted_rects[i]));
+			rectangle(color_plate, sorted_rects[i], Scalar(0, 0, 255), 1);
+		}
+
+		if (numbers.size() == 7)
+			classify_numbers(numbers, knn, K1, K2);
+		else
+			cout << "검출실패" << endl;
+
+		imshow("번호판 영상", color_plate);
+		draw_rotatedRect(image, candidates[plate_no], Scalar(0, 255, 0), 2);
+	}
+
+	imshow("image", image);
 }
